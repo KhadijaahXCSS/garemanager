@@ -1,0 +1,6 @@
+
+echo "backend/db.sqlite3" >> .gitignore
+echo "frontend/node_modules" >> .gitignore
+echo ".env" >> .gitignorebackend/db.sqlite3
+frontend/node_modules
+.env

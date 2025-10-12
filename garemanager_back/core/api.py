@@ -1,4 +1,4 @@
-from rest_framework import viewsets, permissions, status, serializers
+from rest_framework import viewsets, permissions, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from .models import Utilisateur, Gare, Vehicule, FileAttente, Notification, Statistique
@@ -10,19 +10,23 @@ from .serializers import (
     NotificationSerializer,
     StatistiqueSerializer
 )
+from .permissions import IsAdmin, IsAdminOrGestionnaire, IsAdminOrSelf, IsGestionnaireGare, IsOwnerOrAdmin
 
 class UtilisateurViewSet(viewsets.ModelViewSet):
     """
-    API endpoint pour gérer les utilisateurs (Admin, Gestionnaires, Chauffeurs)
+    API endpoint pour gérer les utilisateurs
+    - Inscription publique (POST)
+    - Lecture/modification: Admin seulement
     """
     queryset = Utilisateur.objects.all().order_by('-date_inscription')
     serializer_class = UtilisateurSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+
+    def get_permissions(self):
+        if self.action == 'create':
+            return [permissions.AllowAny()]  # Inscription publique
+        return [IsAdmin()]  # Autres actions réservées à l'admin
 
     def get_queryset(self):
-        """
-        Filtrage par rôle si paramètre fourni
-        """
         queryset = super().get_queryset()
         role = self.request.query_params.get('role', None)
         
@@ -31,41 +35,60 @@ class UtilisateurViewSet(viewsets.ModelViewSet):
             
         return queryset
 
-    @action(detail=False, methods=['get'])
-    def gestionnaires(self, _request):
-        """
-        Endpoint spécial pour récupérer uniquement les gestionnaires de gare
-        """
+    @action(detail=False, methods=['get'], permission_classes=[IsAdmin])
+    def gestionnaires(self, request):
+        """Récupérer uniquement les gestionnaires de gare"""
         gestionnaires = Utilisateur.objects.filter(role='GESTIONNAIRE')
         serializer = self.get_serializer(gestionnaires, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], permission_classes=[IsAdmin])
+    def chauffeurs(self, request):
+        """Récupérer uniquement les chauffeurs"""
+        chauffeurs = Utilisateur.objects.filter(role='CHAUFFEUR')
+        serializer = self.get_serializer(chauffeurs, many=True)
         return Response(serializer.data)
 
 class GareViewSet(viewsets.ModelViewSet):
     """
     API endpoint pour gérer les gares routières
+    - Admin: accès complet
+    - Gestionnaire: accès seulement à sa gare
     """
     queryset = Gare.objects.all()
     serializer_class = GareSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAdminOrGestionnaire]
 
     def get_queryset(self):
-        """
-        Filtrage par gestionnaire si paramètre fourni
-        """
         queryset = super().get_queryset()
-        gestionnaire_id = self.request.query_params.get('gestionnaire', None)
         
+        if self.request.user.role == 'GESTIONNAIRE':
+            return queryset.filter(gestionnaire=self.request.user)
+        
+        gestionnaire_id = self.request.query_params.get('gestionnaire', None)
         if gestionnaire_id is not None:
             queryset = queryset.filter(gestionnaire__id=gestionnaire_id)
             
         return queryset
 
+    def perform_create(self, serializer):
+        """Seul l'admin peut créer une gare"""
+        if self.request.user.role != 'ADMIN':
+            raise serializers.ValidationError("Seul l'administrateur peut créer une gare")
+        serializer.save()
+
     @action(detail=True, methods=['get'])
-    def statistiques(self, _request, _pk=None):
-        """
-        Endpoint pour récupérer les statistiques d'une gare spécifique
-        """
+    def statistiques(self, request, pk=None):
+        """Statistiques d'une gare spécifique"""
         gare = self.get_object()
+        
+        # Vérification des permissions
+        if request.user.role == 'GESTIONNAIRE' and gare.gestionnaire != request.user:
+            return Response(
+                {"error": "Accès non autorisé à cette gare"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
         stats = Statistique.objects.filter(gare=gare)
         serializer = StatistiqueSerializer(stats, many=True)
         return Response(serializer.data)
@@ -73,16 +96,23 @@ class GareViewSet(viewsets.ModelViewSet):
 class VehiculeViewSet(viewsets.ModelViewSet):
     """
     API endpoint pour gérer les véhicules
+    - Admin: accès complet
+    - Gestionnaire: véhicules de sa gare
+    - Chauffeur: seulement son véhicule
     """
     queryset = Vehicule.objects.all().order_by('-date_enregistrement')
     serializer_class = VehiculeSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        """
-        Filtrage par type ou chauffeur
-        """
         queryset = super().get_queryset()
+        
+        if self.request.user.role == 'CHAUFFEUR':
+            return queryset.filter(chauffeur=self.request.user)
+        
+        elif self.request.user.role == 'GESTIONNAIRE':
+            return queryset.filter(gare__gestionnaire=self.request.user)
+        
         type_vehicule = self.request.query_params.get('type', None)
         chauffeur_id = self.request.query_params.get('chauffeur', None)
         
@@ -94,26 +124,31 @@ class VehiculeViewSet(viewsets.ModelViewSet):
         return queryset
 
     def perform_create(self, serializer):
-        """
-        Validation supplémentaire avant création
-        """
+        """Validation de l'immatriculation unique"""
         if Vehicule.objects.filter(immatricule=serializer.validated_data['immatricule']).exists():
             raise serializers.ValidationError({"immatricule": "Ce numéro d'immatriculation existe déjà"})
         serializer.save()
 
 class FileAttenteViewSet(viewsets.ModelViewSet):
     """
-    API endpoint pour gérer les files d'attente des gares
+    API endpoint pour gérer les files d'attente
+    - Admin: accès complet
+    - Gestionnaire: files de sa gare
+    - Chauffeur: seulement sa position
     """
     queryset = FileAttente.objects.all().order_by('position')
     serializer_class = FileAttenteSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        """
-        Filtrage par gare, statut ou véhicule
-        """
         queryset = super().get_queryset()
+        
+        if self.request.user.role == 'CHAUFFEUR':
+            return queryset.filter(vehicule__chauffeur=self.request.user)
+        
+        elif self.request.user.role == 'GESTIONNAIRE':
+            return queryset.filter(gare__gestionnaire=self.request.user)
+        
         gare_id = self.request.query_params.get('gare', None)
         statut = self.request.query_params.get('statut', None)
         vehicule_id = self.request.query_params.get('vehicule', None)
@@ -128,11 +163,17 @@ class FileAttenteViewSet(viewsets.ModelViewSet):
         return queryset
 
     @action(detail=True, methods=['post'])
-    def changer_statut(self, request, _pk=None):
-        """
-        Action personnalisée pour changer le statut d'un véhicule dans la file
-        """
+    def changer_statut(self, request, pk=None):
+        """Changer le statut d'un véhicule dans la file"""
         file = self.get_object()
+        
+        # Vérification des permissions
+        if request.user.role == 'GESTIONNAIRE' and file.gare.gestionnaire != request.user:
+            return Response(
+                {"error": "Vous ne pouvez pas modifier cette file d'attente"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
         nouveau_statut = request.data.get('statut', None)
         
         if nouveau_statut not in dict(FileAttente.StatutFile.choices):
@@ -148,32 +189,28 @@ class FileAttenteViewSet(viewsets.ModelViewSet):
 class NotificationViewSet(viewsets.ModelViewSet):
     """
     API endpoint pour gérer les notifications
+    Chaque utilisateur voit seulement ses notifications
     """
-    queryset = Notification.objects.all().order_by('-date_envoi')
     serializer_class = NotificationSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        """
-        Ne montre que les notifications de l'utilisateur connecté
-        """
-        queryset = super().get_queryset()
-        return queryset.filter(user=self.request.user)
+        return Notification.objects.filter(user=self.request.user).order_by('-date_envoi')
+
+    def perform_create(self, serializer):
+        """Auto-assigner l'utilisateur connecté"""
+        serializer.save(user=self.request.user)
 
     @action(detail=False, methods=['get'])
-    def non_lues(self, _request):
-        """
-        Endpoint pour récupérer les notifications non lues
-        """
+    def non_lues(self, request):
+        """Notifications non lues"""
         notifications = self.get_queryset().filter(est_lue=False)
         serializer = self.get_serializer(notifications, many=True)
         return Response(serializer.data)
 
     @action(detail=True, methods=['post'])
-    def marquer_comme_lue(self, _request, _pk=None):
-        """
-        Marquer une notification spécifique comme lue
-        """
+    def marquer_comme_lue(self, request, pk=None):
+        """Marquer une notification comme lue"""
         notification = self.get_object()
         notification.est_lue = True
         notification.save()
@@ -181,17 +218,20 @@ class NotificationViewSet(viewsets.ModelViewSet):
 
 class StatistiqueViewSet(viewsets.ModelViewSet):
     """
-    API endpoint pour gérer les statistiques des gares
+    API endpoint pour gérer les statistiques
+    - Admin: accès complet
+    - Gestionnaire: statistiques de sa gare
     """
     queryset = Statistique.objects.all().order_by('-date')
     serializer_class = StatistiqueSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAdminOrGestionnaire]
 
     def get_queryset(self):
-        """
-        Filtrage par gare ou date
-        """
         queryset = super().get_queryset()
+        
+        if self.request.user.role == 'GESTIONNAIRE':
+            return queryset.filter(gare__gestionnaire=self.request.user)
+        
         gare_id = self.request.query_params.get('gare', None)
         date = self.request.query_params.get('date', None)
         

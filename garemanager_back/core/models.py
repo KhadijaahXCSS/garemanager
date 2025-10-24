@@ -1,38 +1,30 @@
+# models.py - Version corrigée
 from django.db import models
 from django.contrib.auth.models import AbstractUser
 from django.utils.translation import gettext_lazy as _
+from django.core.validators import MinValueValidator, MaxValueValidator
 import uuid
-
-
-
-# Create your models here.
-
-
 
 class Utilisateur(AbstractUser):
     class Role(models.TextChoices):
         ADMIN = 'ADMIN', _('Administrateur')
         GESTIONNAIRE = 'GESTIONNAIRE', _('Gestionnaire de gare')
         CHAUFFEUR = 'CHAUFFEUR', _('Chauffeur')
+    
+    class StatutUtilisateur(models.TextChoices):
+        ACTIF = 'ACTIF', _('Actif')
+        EN_ATTENTE = 'EN_ATTENTE', _('En attente')
+        SUSPENDU = 'SUSPENDU', _('Suspendu')
+        DESACTIVE = 'DESACTIVE', _('Désactivé')
 
-    # Champs de base (hérités d'AbstractUser : username, password, email, etc.)
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.CHAUFFEUR)
+    statut = models.CharField(max_length=20, choices=StatutUtilisateur.choices, default=StatutUtilisateur.EN_ATTENTE)
     CIN = models.CharField(max_length=20, unique=True, blank=True, null=True)
     telephone = models.CharField(max_length=15, blank=True)
     date_inscription = models.DateTimeField(auto_now_add=True)
-
-    # Relations spécifiques aux rôles (optionnel)
-    def is_gestionnaire(self):
-        return self.role == self.Role.GESTIONNAIRE
-
-    def is_chauffeur(self):
-        return self.role == self.Role.CHAUFFEUR
-    #  pour utiliser le décorateur @admin.action ou has_perm() dans les vues pour restreindre les actions.
-    class Meta:
-        permissions = [
-            ("gerer_gare", "Peut gérer une gare (Gestionnaire)"),
-            ("consulter_file", "Peut consulter la file (Chauffeur)"),
-        ]
+    date_validation = models.DateTimeField(null=True, blank=True)
+    raison_suspension = models.TextField(blank=True)
+    date_suspension = models.DateTimeField(null=True, blank=True)
 
 class Gare(models.Model):
     gare_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -55,12 +47,17 @@ class Vehicule(models.Model):
     vehicule_id = models.UUIDField(primary_key=True, editable=False, default=uuid.uuid4)
     immatricule = models.CharField(max_length=20, unique=True)
     type = models.CharField(max_length=10, choices=TypeVehicule.choices)
-    chauffeur = models.OneToOneField(
+    chauffeur = models.ForeignKey(
         Utilisateur, 
-        on_delete=models.CASCADE, 
+        on_delete=models.CASCADE,
         limit_choices_to={'role': Utilisateur.Role.CHAUFFEUR}
     )
     date_enregistrement = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['immatricule'], name='immatricule_unique')
+        ]
 
 class FileAttente(models.Model):
     class StatutFile(models.TextChoices):
@@ -76,13 +73,14 @@ class FileAttente(models.Model):
     heure_arrivee = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ['position']  # Trie par défaut par position
+        ordering = ['position']
 
 class Notification(models.Model):
     class TypeNotification(models.TextChoices):
         DEPART = 'DEPART', _('Notification de départ')
         CONFLIT = 'CONFLIT', _('Résolution de conflit')
         RETARD = 'RETARD', _('Alerte retard')
+        SYSTEME = 'SYSTEME', _('Notification système')
 
     notif_id = models.UUIDField(primary_key=True, editable=False,default=uuid.uuid4)
     user = models.ForeignKey(Utilisateur, on_delete=models.CASCADE)
@@ -99,3 +97,63 @@ class Statistique(models.Model):
     nb_passagers = models.IntegerField()
     heure_pointe = models.TimeField()
 
+class DemandeAcces(models.Model):
+    class StatutDemande(models.TextChoices):
+        EN_ATTENTE = 'EN_ATTENTE', _('En attente')
+        ACCEPTEE = 'ACCEPTEE', _('Acceptée')
+        REFUSEE = 'REFUSEE', _('Refusée')
+    
+    demande_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    chauffeur = models.ForeignKey(Utilisateur, on_delete=models.CASCADE)
+    gare = models.ForeignKey(Gare, on_delete=models.CASCADE)
+    statut = models.CharField(max_length=20, choices=StatutDemande.choices, default=StatutDemande.EN_ATTENTE)
+    date_demande = models.DateTimeField(auto_now_add=True)
+    date_traitement = models.DateTimeField(null=True, blank=True)
+    
+    class Meta:
+        unique_together = ['chauffeur', 'gare']
+
+class Evaluation(models.Model):
+    eval_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    chauffeur = models.ForeignKey(Utilisateur, on_delete=models.CASCADE)
+    note = models.IntegerField(validators=[MinValueValidator(1), MaxValueValidator(5)])
+    commentaire = models.TextField(blank=True)
+    date_evaluation = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        ordering = ['-date_evaluation']
+
+class Reclamation(models.Model):
+    class TypeReclamation(models.TextChoices):
+        CONFLIT = 'CONFLIT', _('Conflit entre chauffeurs')
+        SERVICE = 'SERVICE', _('Problème de service')
+        COMPORTEMENT = 'COMPORTEMENT', _('Mauvais comportement')
+        TECHNIQUE = 'TECHNIQUE', _('Problème technique')
+        AUTRE = 'AUTRE', _('Autre')
+
+    class StatutReclamation(models.TextChoices):
+        OUVERTE = 'OUVERTE', _('Ouverte')
+        EN_COURS = 'EN_COURS', _('En cours de traitement')
+        RESOLUE = 'RESOLUE', _('Résolue')
+        FERMEE = 'FERMEE', _('Fermée')
+
+    reclamation_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    chauffeur = models.ForeignKey(
+        Utilisateur, 
+        on_delete=models.CASCADE, 
+        limit_choices_to={'role': Utilisateur.Role.CHAUFFEUR}
+    )
+    gare = models.ForeignKey(Gare, on_delete=models.CASCADE)
+    type = models.CharField(max_length=20, choices=TypeReclamation.choices)
+    titre = models.CharField(max_length=200)
+    description = models.TextField()
+    statut = models.CharField(max_length=20, choices=StatutReclamation.choices, default=StatutReclamation.OUVERTE)
+    date_creation = models.DateTimeField(auto_now_add=True)
+    date_modification = models.DateTimeField(auto_now=True)
+    traite_par = models.ForeignKey(
+        Utilisateur, 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True, 
+        related_name='reclamations_traitees'
+    )

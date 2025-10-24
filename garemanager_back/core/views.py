@@ -1,6 +1,10 @@
+# views.py - Vérifiez les imports
+from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-from core.models import Utilisateur
+
+# Utilisez get_user_model() pour plus de sécurité
+Utilisateur = get_user_model()
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     @classmethod

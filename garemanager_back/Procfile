@@ -1,0 +1,1 @@
+web: gunicorn garemanager_back.wsgi

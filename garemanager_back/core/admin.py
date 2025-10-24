@@ -1,20 +1,20 @@
 
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
-from .models import Utilisateur, Gare, Vehicule, FileAttente, Notification, Statistique
+from .models import Utilisateur, Gare, Vehicule, FileAttente, Notification, Statistique, Reclamation
 
 # Register your models here.
 
 
 
 class UtilisateurAdmin(UserAdmin):
-    list_display = ('username', 'email', 'CIN', 'telephone', 'role', 'date_inscription', 'is_staff')
-    list_filter = ('role', 'is_staff')
+    list_display = ('username', 'email', 'CIN', 'telephone', 'role', 'statut', 'date_inscription', 'is_staff')
+    list_filter = ('role', 'statut', 'is_staff')
     fieldsets = (
         (None, {'fields': ('username', 'password')}),
-        ('Informations personnelles', {'fields': ('email', 'CIN', 'telephone', 'role')}),
+        ('Informations personnelles', {'fields': ('email', 'CIN', 'telephone', 'role', 'statut', 'raison_suspension')}),
         ('Permissions', {'fields': ('is_staff', 'is_active', 'groups', 'user_permissions')}),
-        ('Dates importantes', {'fields': ('last_login',)}),  # Retirez `date_inscription`
+        ('Dates importantes', {'fields': ('last_login', 'date_validation', 'date_suspension')}),
     )
     add_fieldsets = (
         (None, {
@@ -24,6 +24,20 @@ class UtilisateurAdmin(UserAdmin):
     )
     search_fields = ('username', 'email', 'CIN')
     ordering = ('-date_inscription',)
+
+
+
+class ReclamationAdmin(admin.ModelAdmin):
+    list_display = ('titre', 'chauffeur', 'gare', 'type', 'statut', 'date_creation')
+    list_filter = ('type', 'statut', 'gare')
+    search_fields = ('titre', 'chauffeur__username', 'description')
+    actions = ['marquer_comme_resolue']
+
+    def marquer_comme_resolue(self, request, queryset):
+        queryset.update(statut='RESOLUE', traite_par=request.user)
+    marquer_comme_resolue.short_description = "Marquer les réclamations sélectionnées comme résolues"
+
+    
 
 class GareAdmin(admin.ModelAdmin):
     list_display = ('nom', 'localisation', 'capacite_max', 'gestionnaire')
@@ -61,3 +75,4 @@ admin.site.register(Vehicule, VehiculeAdmin)
 admin.site.register(FileAttente, FileAttenteAdmin)
 admin.site.register(Notification, NotificationAdmin)
 admin.site.register(Statistique, StatistiqueAdmin)
+admin.site.register(Reclamation, ReclamationAdmin)
